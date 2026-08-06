@@ -19,7 +19,11 @@ import {
 } from '@/lib/rewards-system';
 import { checkAndRunMonthlyRollover, monthKey } from '@/lib/monthly-cycle';
 import { inferPackaging } from '@/lib/packaging-inference';
-import { validateBarcode, validateBarcodeFormat } from '@/lib/input-validation';
+import {
+  validateBarcode,
+  validateBarcodeFormat,
+  validateImageUrl,
+} from '@/lib/input-validation';
 import { normalizeEmail } from '@/lib/normalize-email';
 
 type OpenFoodFactsResponse = {
@@ -377,11 +381,12 @@ export async function POST(req: Request) {
         : 0;
       const pointsSummary = getUserPointsSummary(updatedUser);
 
-      const productImage =
+      const productImage = validateImageUrl(
         product.image_front_url ||
-        product.image_url ||
-        product.image_front_small_url ||
-        null;
+          product.image_url ||
+          product.image_front_small_url ||
+          null
+      );
 
       return NextResponse.json({
         productName: product.product_name,
@@ -435,11 +440,17 @@ export async function POST(req: Request) {
         },
       });
     } catch (dbError) {
-      console.error('Database error during scan:', dbError instanceof Error ? dbError.message : 'Unknown database error');
+      console.error(
+        'Database error during scan:',
+        dbError instanceof Error ? dbError.message : 'Unknown database error'
+      );
       return NextResponse.json({ error: 'Database error' }, { status: 500 });
     }
   } catch (error) {
-    console.error('Scan API error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Scan API error:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return NextResponse.json(
       { error: 'Failed to scan product' },
       { status: 500 }

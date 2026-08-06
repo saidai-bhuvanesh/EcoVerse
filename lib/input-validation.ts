@@ -203,3 +203,41 @@ export const ValidationLimits = {
   QUERY_MAX: MAX_QUERY_LENGTH,
   QUERY_MIN: MIN_QUERY_LENGTH,
 };
+
+// Allowed image CDN domains for product images
+const ALLOWED_IMAGE_DOMAINS = new Set([
+  'images.openfoodfacts.org',
+  'static.openfoodfacts.org',
+  'world.openfoodfacts.org',
+]);
+
+/**
+ * Validates and sanitizes image URLs from third-party sources
+ * Prevents IP leak and tracking by only allowing trusted CDN domains
+ */
+export function validateImageUrl(
+  url: string | null | undefined
+): string | null {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+
+    // Only allow HTTPS
+    if (parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    // Only allow known Open Food Facts CDN domains
+    if (!ALLOWED_IMAGE_DOMAINS.has(parsed.hostname)) {
+      return null;
+    }
+
+    return url;
+  } catch {
+    // Invalid URL
+    return null;
+  }
+}
