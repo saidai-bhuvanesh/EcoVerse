@@ -20,6 +20,7 @@ const REPEATABLE_ITEMS = ['streak_protector', 'double_points'];
  * Fetches user's current points, transaction history, achievements, and lists
  * all available shop items. Injected logic preserves repeatable/consumable
  * items in the available items list even after purchase.
+ * NOTE: This endpoint is idempotent - it only reads data, never writes.
  */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -31,7 +32,7 @@ export async function GET(req: Request) {
 
   try {
     await dbConnect();
-    let user = await User.findOne({ email });
+    const user = await User.findOne({ email });
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
@@ -40,98 +41,11 @@ export async function GET(req: Request) {
     // Calculate current level data
     const levelData = calculateLevel(user.totalPointsEarned || 0);
 
-    // --- ATOMIC POINT CONFIRMATION ---
-    // We check for points that have passed the confirmation threshold.
+    // --- READ-ONLY: Point confirmation status ---
+    // We check for points that have passed the confirmation threshold but DO NOT
+    // confirm them here - that should only happen via POST /api/rewards/confirm
+    // GET requests must be idempotent (RFC 7231)
     const confirmationData = confirmPendingPoints(user);
-
-    if (confirmationData.confirmedPoints > 0) {
-      const now = new Date();
-      const transactionIdsToConfirm =
-        confirmationData.confirmedTransactions.map((t) => t._id);
-
-      // We perform an atomic update to move points from unconfirmed to confirmed status.
-      // We use an aggregation-pipeline update to ensure we only increment/decrement
-      // based on transactions that are currently in 'unconfirmed' status,
-      // preventing double-counting if a retry occurs.
-      const updatedUser = await User.findOneAndUpdate(
-        { email },
-        [
-          {
-            $set: {
-              // Calculate points from transactions that are actually still unconfirmed
-              matchedPoints: {
-                $sum: {
-                  $map: {
-                    input: {
-                      $filter: {
-                        input: { $ifNull: ['$rewardTransactions', []] },
-                        as: 't',
-                        cond: {
-                          $and: [
-                            { $in: ['$$t._id', transactionIdsToConfirm] },
-                            { $eq: ['$$t.pointsType', 'unconfirmed'] },
-                          ],
-                        },
-                      },
-                    },
-                    as: 'mt',
-                    in: { $ifNull: ['$$mt.points', 0] },
-                  },
-                },
-              },
-            },
-          },
-          {
-            $set: {
-              confirmedPoints: {
-                $add: [
-                  { $ifNull: ['$confirmedPoints', 0] },
-                  { $ifNull: ['$matchedPoints', 0] },
-                ],
-              },
-              unconfirmedPoints: {
-                $subtract: [
-                  { $ifNull: ['$unconfirmedPoints', 0] },
-                  { $ifNull: ['$matchedPoints', 0] },
-                ],
-              },
-              rewardTransactions: {
-                $map: {
-                  input: { $ifNull: ['$rewardTransactions', []] },
-                  as: 't',
-                  in: {
-                    $cond: {
-                      if: {
-                        $and: [
-                          { $in: ['$$t._id', transactionIdsToConfirm] },
-                          { $eq: ['$$t.pointsType', 'unconfirmed'] },
-                        ],
-                      },
-                      then: {
-                        $mergeObjects: [
-                          '$$t',
-                          { pointsType: 'confirmed', confirmedAt: now },
-                        ],
-                      },
-                      else: '$$t',
-                    },
-                  },
-                },
-              },
-            },
-          },
-          { $unset: 'matchedPoints' },
-        ],
-        { new: true }
-      );
-
-      // Re-assign local user to the ground-truth updated document from DB.
-      // This ensures all subsequent logic (summaries, achievements) uses
-      // the most accurate and consistent data.
-      if (updatedUser) {
-        user = updatedUser;
-      }
-    }
 
     const pointsSummary = getUserPointsSummary(user);
 
@@ -215,7 +129,10 @@ export async function GET(req: Request) {
           : null,
     });
   } catch (error) {
-    console.error('Error fetching rewards data:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Error fetching rewards data:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return NextResponse.json(
       { error: 'Failed to fetch rewards data' },
       { status: 500 }
@@ -224,10 +141,135 @@ export async function GET(req: Request) {
 }
 
 /**
- * POST /api/rewards/redeem - Redeem reward points for shop items
- * Validates purchase eligibility and updates user status. Repeatable items (e.g.
- * streak protectors, double points) bypass duplicate-purchase validation and are
- * omitted from the unique constraint query in the atomic update.
+ * Handles point confirmation - moves points from unconfirmed to confirmed status
+ * This is a state-changing operation and should only be called via POST
+ */
+async function handleConfirmPoints(email: string) {
+  try {
+    await dbConnect();
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    }
+
+    // Check for points that have passed the confirmation threshold
+    const confirmationData = confirmPendingPoints(user);
+
+    if (confirmationData.confirmedPoints === 0) {
+      return NextResponse.json({
+        success: true,
+        confirmedPoints: 0,
+        message: 'No points to confirm',
+      });
+    }
+
+    const now = new Date();
+    const transactionIdsToConfirm = confirmationData.confirmedTransactions.map(
+      (t) => t._id
+    );
+
+    // Perform atomic update to move points from unconfirmed to confirmed status
+    const updatedUser = await User.findOneAndUpdate(
+      { email },
+      [
+        {
+          $set: {
+            matchedPoints: {
+              $sum: {
+                $map: {
+                  input: {
+                    $filter: {
+                      input: { $ifNull: ['$rewardTransactions', []] },
+                      as: 't',
+                      cond: {
+                        $and: [
+                          { $in: ['$$t._id', transactionIdsToConfirm] },
+                          { $eq: ['$$t.pointsType', 'unconfirmed'] },
+                        ],
+                      },
+                    },
+                  },
+                  as: 'mt',
+                  in: { $ifNull: ['$$mt.points', 0] },
+                },
+              },
+            },
+          },
+        },
+        {
+          $set: {
+            confirmedPoints: {
+              $add: [
+                { $ifNull: ['$confirmedPoints', 0] },
+                { $ifNull: ['$matchedPoints', 0] },
+              ],
+            },
+            unconfirmedPoints: {
+              $subtract: [
+                { $ifNull: ['$unconfirmedPoints', 0] },
+                { $ifNull: ['$matchedPoints', 0] },
+              ],
+            },
+            rewardTransactions: {
+              $map: {
+                input: { $ifNull: ['$rewardTransactions', []] },
+                as: 't',
+                in: {
+                  $cond: {
+                    if: {
+                      $and: [
+                        { $in: ['$$t._id', transactionIdsToConfirm] },
+                        { $eq: ['$$t.pointsType', 'unconfirmed'] },
+                      ],
+                    },
+                    then: {
+                      $mergeObjects: [
+                        '$$t',
+                        { pointsType: 'confirmed', confirmedAt: now },
+                      ],
+                    },
+                    else: '$$t',
+                  },
+                },
+              },
+            },
+          },
+        },
+        { $unset: 'matchedPoints' },
+      ],
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return NextResponse.json(
+        { error: 'Failed to confirm points - user may not exist' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      confirmedPoints: confirmationData.confirmedPoints,
+      newBalance: updatedUser.rewardPoints,
+    });
+  } catch (error) {
+    console.error(
+      'Error confirming points:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
+    return NextResponse.json(
+      { error: 'Failed to confirm points' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/rewards - Two actions based on body:
+ * - { action: 'confirm' } - Confirm pending points (moves from unconfirmed to confirmed)
+ * - { itemId: '...' } - Redeem reward points for shop items
  */
 export async function POST(req: Request) {
   const email = req.headers.get('x-user-email');
@@ -236,7 +278,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { itemId } = await req.json();
+  const body = await req.json();
+  const { action, itemId } = body;
+
+  // Handle confirm action separately
+  if (action === 'confirm') {
+    return handleConfirmPoints(email);
+  }
 
   if (!itemId) {
     return NextResponse.json(
@@ -414,7 +462,10 @@ export async function POST(req: Request) {
       message: `${shopItem.name} redeemed successfully!`,
     });
   } catch (error) {
-    console.error('Error redeeming reward:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Error redeeming reward:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return NextResponse.json(
       { error: 'Failed to redeem reward' },
       { status: 500 }
