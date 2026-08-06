@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { verifyToken } from './lib/auth';
+import { randomUUID } from 'crypto';
 
 const protectedRoutes = [
   '/dashboard',
@@ -12,6 +13,9 @@ const protectedRoutes = [
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Generate or extract request ID for tracing
+  const requestId = request.headers.get('x-request-id') || randomUUID();
 
   // Get the token from cookies
   const token = request.cookies.get('auth_token')?.value;
@@ -27,6 +31,9 @@ export async function middleware(request: NextRequest) {
 
   // Clone headers to modify them
   const requestHeaders = new Headers(request.headers);
+
+  // Add request ID for tracing
+  requestHeaders.set('x-request-id', requestId);
 
   // ALWAYS remove any client-supplied identity header to prevent spoofing
   requestHeaders.delete('x-user-email');
