@@ -16,29 +16,24 @@ export async function POST(req: Request) {
     const normalizedEmail =
       typeof email === 'string' ? normalizeEmail(email) : '';
 
+    // Generic error message to prevent user enumeration
+    const genericError = { error: 'Invalid credentials' };
+
     const user = await User.findOne({ email: normalizedEmail });
 
-    if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-
-    if (!user.password) {
-      return NextResponse.json(
-        {
-          error:
-            'This account uses Google Sign-In. Please continue with Google.',
-        },
-        { status: 400 }
-      );
+    // Return generic error for any auth failure to prevent user enumeration
+    if (!user || !user.password) {
+      // Delay to mitigate timing attacks
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return NextResponse.json(genericError, { status: 401 });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      return NextResponse.json(
-        { error: 'Invalid credentials' },
-        { status: 401 }
-      );
+      // Delay to mitigate timing attacks
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return NextResponse.json(genericError, { status: 401 });
     }
 
     const userData = {
@@ -59,7 +54,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ user: userData }, { status: 200 });
   } catch (error) {
-    console.error('Signin error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Signin error:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
 
     return NextResponse.json(
       { error: 'Internal server error' },
