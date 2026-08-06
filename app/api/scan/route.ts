@@ -21,6 +21,7 @@ import { checkAndRunMonthlyRollover, monthKey } from '@/lib/monthly-cycle';
 import { inferPackaging } from '@/lib/packaging-inference';
 import { validateBarcode, validateBarcodeFormat } from '@/lib/input-validation';
 import { normalizeEmail } from '@/lib/normalize-email';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 type OpenFoodFactsResponse = {
   product: {
@@ -41,6 +42,22 @@ function getUtcDayKey(date: Date) {
 }
 
 export async function POST(req: Request) {
+  // Rate limiting check
+  const { allowed, remaining, resetIn } = checkRateLimit(req);
+  if (!allowed) {
+    const response = NextResponse.json(
+      { error: 'Too many requests, please try again later.' },
+      { status: 429 }
+    );
+    response.headers.set('X-RateLimit-Remaining', String(remaining));
+    response.headers.set(
+      'X-RateLimit-Reset',
+      String(Math.ceil(resetIn / 1000))
+    );
+    response.headers.set('Retry-After', String(Math.ceil(resetIn / 1000)));
+    return response;
+  }
+
   const rawUserEmail = req.headers.get('x-user-email');
 
   if (!rawUserEmail) {
@@ -435,11 +452,17 @@ export async function POST(req: Request) {
         },
       });
     } catch (dbError) {
-      console.error('Database error during scan:', dbError instanceof Error ? dbError.message : 'Unknown database error');
+      console.error(
+        'Database error during scan:',
+        dbError instanceof Error ? dbError.message : 'Unknown database error'
+      );
       return NextResponse.json({ error: 'Database error' }, { status: 500 });
     }
   } catch (error) {
-    console.error('Scan API error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Scan API error:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return NextResponse.json(
       { error: 'Failed to scan product' },
       { status: 500 }
