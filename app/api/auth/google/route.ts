@@ -57,41 +57,80 @@ export async function POST(req: Request) {
   let userDoc: LeanUser | null = null;
   try {
     await dbConnect();
-    userDoc = await User.findOneAndUpdate(
-      { email: normalizedEmail },
-      {
-        $set: {
-          firebaseUid: verified.uid,
-          authProvider: 'google',
+
+    // First, try to find existing user by email
+    let existingUser = await User.findOne({ email: normalizedEmail });
+
+    if (existingUser) {
+      // User exists - link Firebase UID if not already linked
+      // or update the Firebase UID if the user is linking a new Google account
+      existingUser = await User.findOneAndUpdate(
+        { email: normalizedEmail },
+        {
+          $set: {
+            firebaseUid: verified.uid,
+            authProvider: 'google',
+          },
         },
-        $setOnInsert: {
-          email: normalizedEmail,
-          name: verified.name,
-          avatarId: 'avatar-1',
-          monthlyCarbon: 0,
-          totalScanned: 0,
-          joinedAt: new Date().toISOString(),
-        },
-      },
-      {
-        new: true,
-        upsert: true,
-        lean: true,
-      }
-    );
+        {
+          new: true,
+          lean: true,
+        }
+      );
+      userDoc = existingUser;
+    } else {
+      // No existing user - create new user
+      userDoc = await User.create({
+        email: normalizedEmail,
+        firebaseUid: verified.uid,
+        authProvider: 'google',
+        name: verified.name || '',
+        avatarId: 'avatar-1',
+        monthlyCarbon: 0,
+        totalScanned: 0,
+        joinedAt: new Date().toISOString(),
+      });
+      // Convert to lean document for consistent handling
+      userDoc = userDoc.toObject();
+    }
   } catch (err: any) {
     if (
       err?.code === 11000 ||
       (err?.name === 'MongoServerError' && err?.code === 11000)
     ) {
-      return NextResponse.json(
-        { error: 'An account with this email already exists' },
-        { status: 409 }
+      // Handle race condition where user was created between our check and insert
+      // Try to update the existing user with firebaseUid
+      try {
+        const updatedUser = await User.findOneAndUpdate(
+          { email: normalizedEmail },
+          {
+            $set: {
+              firebaseUid: verified.uid,
+              authProvider: 'google',
+            },
+          },
+          { new: true, lean: true }
+        );
+        if (updatedUser) {
+          userDoc = updatedUser;
+        }
+      } catch (updateErr) {
+        console.error(
+          'Failed to link Firebase UID:',
+          updateErr instanceof Error ? updateErr.message : 'Unknown error'
+        );
+        return NextResponse.json(
+          { error: 'Failed to link account' },
+          { status: 500 }
+        );
+      }
+    } else {
+      console.error(
+        'Failed to upsert user in google route:',
+        err instanceof Error ? err.message : 'Unknown error'
       );
+      return NextResponse.json({ error: 'Database error' }, { status: 500 });
     }
-    // FIX: Suppress linting rule for tracking low-level operational failures
-    console.error('Failed to upsert user in google route:', err instanceof Error ? err.message : 'Unknown error');
-    return NextResponse.json({ error: 'Database error' }, { status: 500 });
   }
 
   if (!userDoc) {
