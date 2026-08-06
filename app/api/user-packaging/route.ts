@@ -5,6 +5,19 @@ export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
 
+// Valid packaging materials
+const VALID_MATERIALS = [
+  'plastic',
+  'glass',
+  'metal',
+  'cardboard',
+  'paper',
+  'composite',
+  'biodegradable',
+  'recyclable',
+  'non-recyclable',
+];
+
 export async function POST(req: Request) {
   const userEmail = req.headers.get('x-user-email');
 
@@ -12,10 +25,50 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { barcode, material } = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: 'Invalid JSON payload' },
+      { status: 400 }
+    );
+  }
 
-  if (!barcode || !material) {
-    return NextResponse.json({ error: 'Missing data' }, { status: 400 });
+  if (typeof body !== 'object' || body === null) {
+    return NextResponse.json(
+      { error: 'Invalid JSON payload' },
+      { status: 400 }
+    );
+  }
+
+  const { barcode, material } = body as {
+    barcode?: unknown;
+    material?: unknown;
+  };
+
+  // Validate barcode - must be a non-empty string with reasonable length
+  if (
+    typeof barcode !== 'string' ||
+    barcode.length < 1 ||
+    barcode.length > 100 ||
+    !/^[A-Za-z0-9-_]+$/.test(barcode)
+  ) {
+    return NextResponse.json(
+      { error: 'Invalid barcode format' },
+      { status: 400 }
+    );
+  }
+
+  // Validate material - must be one of the allowed values
+  if (
+    typeof material !== 'string' ||
+    !VALID_MATERIALS.includes(material.toLowerCase())
+  ) {
+    return NextResponse.json(
+      { error: 'Invalid material type' },
+      { status: 400 }
+    );
   }
 
   console.warn(
