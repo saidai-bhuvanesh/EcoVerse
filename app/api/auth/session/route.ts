@@ -40,6 +40,13 @@ export async function GET() {
       return NextResponse.json({ error: 'User not found' }, { status: 401 });
     }
 
+    // SECURITY: Verify that the userId in the token matches the user's _id in the database
+    // This prevents token hijacking where someone might have a valid token but for a different user
+    if (payload.userId && user._id.toString() !== payload.userId) {
+      cookieStore.delete('auth_token');
+      return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
+    }
+
     // Map the MongoDB document back to the required frontend shape
     const userData = {
       _id: user._id,
@@ -77,7 +84,10 @@ export async function GET() {
 
     return NextResponse.json({ user: userData }, { status: 200 });
   } catch (error) {
-    console.error('Session route error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Session route error:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
