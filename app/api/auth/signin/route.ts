@@ -12,10 +12,41 @@ export async function POST(req: Request) {
   try {
     await dbConnect();
 
-    const { email, password } = await req.json();
-    const normalizedEmail =
-      typeof email === 'string' ? normalizeEmail(email) : '';
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON payload' },
+        { status: 400 }
+      );
+    }
 
+    if (typeof body !== 'object' || body === null) {
+      return NextResponse.json(
+        { error: 'Invalid JSON payload' },
+        { status: 400 }
+      );
+    }
+
+    const { email, password } = body as { email?: unknown; password?: unknown };
+
+    // Strict type validation for email and password
+    if (typeof email !== 'string' || !email) {
+      return NextResponse.json(
+        { error: 'Email is required and must be a string' },
+        { status: 400 }
+      );
+    }
+
+    if (typeof password !== 'string' || !password) {
+      return NextResponse.json(
+        { error: 'Password is required and must be a string' },
+        { status: 400 }
+      );
+    }
+
+    const normalizedEmail = normalizeEmail(email);
     const user = await User.findOne({ email: normalizedEmail });
 
     if (!user) {
@@ -59,7 +90,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ user: userData }, { status: 200 });
   } catch (error) {
-    console.error('Signin error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      'Signin error:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
 
     return NextResponse.json(
       { error: 'Internal server error' },
